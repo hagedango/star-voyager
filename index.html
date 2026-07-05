@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Star Voyager v3.2</title>
+<title>Star Voyager v4.2</title>
 <!--
   Star Voyager — Rocket Planetarium Simulator v3.2
   設計図 v0.2 準拠 + ローンチシーケンス (PAD → ASCENT → SPACE)
@@ -12,6 +12,9 @@
   v3.0: Web Audioサウンド全合成(アンビエントドローン/WARPライザー/点火ブーム/ビープ/ミュート)
   v3.1: 地球帰還+着陸 (RETURN → REENTRY → TOUCHDOWN → 再打ち上げ可能)
   v3.2: 月ツアー・オートパイロット (TRANSIT → LUNAR周回30秒+自動視線追尾 → RETURN)
+  v4.0: コックピット窓枠(パララックス+再突入グロー) / G演出(Gメーター+周辺減光+強化シェイク) / ステージ分離+MAX-Q
+  v4.1: 管制交信ボイス(SpeechSynthesis+スケルチ音) / 姿勢指示器(人工水平儀) / フェーズ連動の実燃料計
+  v4.2: ミッションレポート(飛行時間/最高速度/総距離)+実績バッジ(localStorage) / 無重力で漂う船内小物
   単一ファイル構成 / Three.js (CDN)
 -->
 <style>
@@ -58,9 +61,22 @@ body.no-blur .panel{backdrop-filter:none;-webkit-backdrop-filter:none;background
 }
 
 /* ---- nav radar ---- */
-#radar{width:110px;height:110px;border-radius:50%;position:relative;margin:8px auto 6px;
+#navrow{display:flex;gap:10px;align-items:center;justify-content:center;margin:8px 0 6px}
+#radar{width:110px;height:110px;border-radius:50%;position:relative;flex:none;
   border:1px solid rgba(0,240,255,.3);overflow:hidden;
   box-shadow:inset 0 0 14px rgba(0,240,255,.12)}
+
+/* ---- attitude indicator (artificial horizon) ---- */
+#adi{width:70px;height:70px;border-radius:50%;position:relative;overflow:hidden;flex:none;
+  border:1px solid rgba(0,240,255,.3);box-shadow:inset 0 0 14px rgba(0,240,255,.12)}
+#adi-ball{position:absolute;left:-50%;top:-50%;width:200%;height:200%;border-radius:50%;
+  background:linear-gradient(#16407e 0 49.2%, #d8e9ff 49.2% 50.8%, #5a3a17 50.8% 100%)}
+#adi-wing{position:absolute;left:50%;top:50%;width:40px;height:10px;
+  transform:translate(-50%,-50%);pointer-events:none}
+#adi-wing::before{content:'';position:absolute;left:0;right:0;top:4px;height:2px;
+  background:var(--amber);box-shadow:0 0 6px var(--amber)}
+#adi-wing::after{content:'';position:absolute;left:50%;top:2px;width:6px;height:6px;
+  margin-left:-3px;border-radius:50%;background:var(--amber);box-shadow:0 0 6px var(--amber)}
 #radar::after{content:'';position:absolute;top:50%;left:50%;width:4px;height:4px;margin:-2px;
   border-radius:50%;background:var(--cyan);box-shadow:0 0 6px var(--cyan)}
 #sweep{position:absolute;inset:0;border-radius:50%;
@@ -104,10 +120,35 @@ body.no-blur .btn{backdrop-filter:none;-webkit-backdrop-filter:none;background:r
 #b-warp.active{color:var(--amber);border-color:rgba(255,179,71,.5);
   box-shadow:0 0 18px rgba(255,179,71,.5);text-shadow:0 0 6px var(--amber)}
 
+/* ---- cockpit frame ---- */
+#cockpit{position:fixed;inset:-40px;pointer-events:none;will-change:transform}
+#cp-glass{position:absolute;inset:0;transition:box-shadow 1.2s;
+  background:linear-gradient(115deg,transparent 42%,rgba(160,210,255,.05) 46%,rgba(160,210,255,.02) 55%,transparent 61%)}
+#cockpit.reentry #cp-glass{box-shadow:inset 0 0 150px rgba(255,110,40,.42)}
+#cp-top{position:absolute;top:0;left:0;right:0;height:11%;
+  border-radius:0 0 46% 46%/0 0 90px 90px;
+  background:linear-gradient(#04060c,#0c1426 66%,#15203a);
+  box-shadow:0 8px 26px rgba(0,0,0,.75), inset 0 -2px 0 rgba(0,240,255,.16)}
+#cp-bot{position:absolute;bottom:0;left:0;right:0;height:14%;
+  border-radius:46% 46% 0 0/70px 70px 0 0;
+  background:linear-gradient(#17233f,#0a101f 45%,#04060c);
+  box-shadow:0 -8px 26px rgba(0,0,0,.75), inset 0 2px 0 rgba(0,240,255,.16)}
+#cp-bot::after{content:'';position:absolute;top:16px;left:50%;transform:translateX(-50%);
+  width:34%;height:6px;border-radius:3px;opacity:.5;filter:blur(.5px);
+  background:repeating-linear-gradient(90deg,rgba(0,240,255,.55) 0 6px,transparent 6px 22px)}
+#cp-l,#cp-r{position:absolute;top:6%;bottom:9%;width:8%}
+#cp-l{left:0;transform:skewY(5deg);border-right:1px solid rgba(0,240,255,.13);border-radius:0 26px 26px 0;
+  background:linear-gradient(90deg,#04060c,#0b1322 60%,#101b30)}
+#cp-r{right:0;transform:skewY(-5deg);border-left:1px solid rgba(0,240,255,.13);border-radius:26px 0 0 26px;
+  background:linear-gradient(-90deg,#04060c,#0b1322 60%,#101b30)}
+
 /* ---- launch sequence ---- */
 #flash{position:fixed;inset:0;background:#fff;opacity:0;pointer-events:none;z-index:40}
 #flash.go{animation:flash 1.6s ease-out both}
 @keyframes flash{0%{opacity:0}8%{opacity:.95}100%{opacity:0}}
+#flash.sep{animation:sepflash .8s ease-out both}
+@keyframes sepflash{0%{opacity:0}12%{opacity:.35}100%{opacity:0}}
+.value.hi{color:var(--amber);text-shadow:0 0 2px var(--amber),0 0 8px rgba(255,179,71,.7)}
 #msg{position:fixed;top:30%;left:0;right:0;text-align:center;font-size:26px;letter-spacing:6px;
   color:var(--amber);text-shadow:0 0 14px rgba(255,179,71,.8);
   opacity:0;transition:opacity .35s;pointer-events:none}
@@ -115,6 +156,27 @@ body.no-blur .btn{backdrop-filter:none;-webkit-backdrop-filter:none;background:r
 #b-launch{color:var(--amber);border-color:rgba(255,179,71,.5)}
 #b-launch:hover{box-shadow:0 0 18px rgba(255,179,71,.5)}
 #b-snd{padding:10px 14px}
+
+/* ---- mission report ---- */
+#report{top:50%;left:50%;transform:translate(-50%,-50%);min-width:280px;
+  text-align:left;cursor:pointer;z-index:30;
+  animation:repin .5s ease both}   /* .panel's fadein would clobber the centering transform */
+@keyframes repin{from{opacity:0;transform:translate(-50%,-46%)}to{opacity:1;transform:translate(-50%,-50%)}}
+.rep-row{display:flex;justify-content:space-between;gap:24px;margin:7px 0;font-size:13px}
+.rep-row span:last-child{color:var(--cyan);
+  text-shadow:0 0 2px var(--cyan),0 0 8px rgba(0,240,255,.6)}
+.rep-row span:first-child{color:var(--sub);letter-spacing:1px;font-size:11px}
+#rep-badges{margin-top:10px}
+.badge{display:inline-block;margin:3px 4px 0 0;padding:3px 8px;font-size:10px;letter-spacing:1px;
+  border:1px solid rgba(0,240,255,.35);border-radius:6px}
+.badge.new{color:var(--amber);border-color:rgba(255,179,71,.55);
+  text-shadow:0 0 6px rgba(255,179,71,.7)}
+.rec{color:var(--amber)!important;text-shadow:0 0 8px rgba(255,179,71,.8)!important}
+
+/* ---- zero-g floaties ---- */
+.floatie{position:fixed;font-size:26px;pointer-events:none;opacity:.85;
+  filter:drop-shadow(0 0 4px rgba(0,240,255,.25));
+  transition:transform 14s linear}
 
 /* ---- boot / offline ---- */
 #boot{position:fixed;inset:0;z-index:50;background:#030308;
@@ -141,6 +203,12 @@ body.no-blur .btn{backdrop-filter:none;-webkit-backdrop-filter:none;background:r
 </head>
 <body>
 <div id="vignette"></div>
+<div id="cockpit">
+  <div id="cp-glass"></div>
+  <div id="cp-top"></div>
+  <div id="cp-l"></div><div id="cp-r"></div>
+  <div id="cp-bot"></div>
+</div>
 <div id="flash"></div>
 <div id="msg"></div>
 
@@ -152,11 +220,16 @@ body.no-blur .btn{backdrop-filter:none;-webkit-backdrop-filter:none;background:r
   <div class="label">VELOCITY</div>
   <div class="value" id="vel-v">0.0 km/s</div>
   <div class="label" id="vel-mode">STANDBY</div>
+  <div class="label" style="margin-top:8px">G-FORCE</div>
+  <div class="value" id="g-v" style="font-size:15px">1.0 G</div>
 </div>
 <div class="panel" id="p-nav">
   <div class="label">NAV ARRAY</div>
-  <div id="radar"><div id="sweep"></div>
-    <div id="ring"><span class="n">N</span><span class="e">E</span><span class="s">S</span><span class="w">W</span></div>
+  <div id="navrow">
+    <div id="radar"><div id="sweep"></div>
+      <div id="ring"><span class="n">N</span><span class="e">E</span><span class="s">S</span><span class="w">W</span></div>
+    </div>
+    <div id="adi"><div id="adi-ball"></div><div id="adi-wing"></div></div>
   </div>
   <div class="label">HDG <span id="hdg">000</span>° / <span id="constname">ORION</span></div>
 </div>
@@ -167,6 +240,13 @@ body.no-blur .btn{backdrop-filter:none;-webkit-backdrop-filter:none;background:r
   <div class="label">FUEL</div><div class="bar amber"><i id="b-fuel"></i></div>
   <div class="label">SHIELD</div><div class="bar"><i id="b-shd"></i></div>
   <div id="gfx">GFX: HIGH</div>
+</div>
+
+<div class="panel hide" id="report">
+  <div class="label">MISSION REPORT</div>
+  <div id="rep-body"></div>
+  <div id="rep-badges"></div>
+  <div class="label" style="margin-top:12px;text-align:center">— CLICK TO CLOSE —</div>
 </div>
 
 <div id="reticle">
@@ -186,11 +266,12 @@ body.no-blur .btn{backdrop-filter:none;-webkit-backdrop-filter:none;background:r
   <button class="btn hide" id="b-tour">&#127765; TOUR</button>
   <button class="btn hide" id="b-return">&#127757; RETURN</button>
   <button class="btn" id="b-launch">&#128640; LAUNCH</button>
+  <button class="btn" id="b-voice" title="voice on/off">&#128251;</button>
   <button class="btn" id="b-snd" title="sound on/off">&#128266;</button>
 </div>
 
 <div id="boot">
-  <div class="bootline" style="animation-delay:.2s">STAR VOYAGER FLIGHT SYSTEM v3.2</div>
+  <div class="bootline" style="animation-delay:.2s">STAR VOYAGER FLIGHT SYSTEM v4.2</div>
   <div class="bootline" style="animation-delay:.8s">LAUNCH PAD SYSTEMS NOMINAL</div>
   <div class="bootline" style="animation-delay:1.4s">SYSTEM ONLINE</div>
 </div>
@@ -459,11 +540,15 @@ scene.add(skyDome);
 const MODES={PAD:{v:0,fov:70},ASCENT:{v:14,fov:72},
              SLOW:{v:4,fov:68},CRUISE:{v:40,fov:70},WARP:{v:420,fov:78}};
 let phase='PAD', mode='PAD', speed=0, ly=0, shake=0, tourTheta=0;
+let gVal=1, kick=0, sep=false, maxq=false;   /* v4.0: G-force + stage separation */
+let fuel=100;                                 /* v4.1: phase-driven fuel gauge */
+const MS={t0:0,vmax:0,dist:0,moon:false,warp:false};   /* v4.2: per-flight mission stats */
+let floatT=6;                                 /* v4.2: seconds until next zero-g floatie */
 
 document.querySelectorAll('.btn.mode').forEach(b=>{
   b.addEventListener('click',()=>{
     if(mode===b.dataset.m)return;
-    if(b.dataset.m==='WARP')warpRiser(); else beep(880);
+    if(b.dataset.m==='WARP'){warpRiser();say('Warp drive engaged.');MS.warp=true;} else beep(880);
     mode=b.dataset.m;
     document.querySelectorAll('.btn.mode').forEach(x=>x.classList.toggle('active',x===b));
   });
@@ -473,13 +558,17 @@ const launchBtn=$('#b-launch'), msgEl=$('#msg');
 function showMsg(t){msgEl.textContent=t;msgEl.style.opacity=t?1:0;}
 launchBtn.addEventListener('click',()=>{
   if(phase!=='PAD')return;
-  let n=3; showMsg('T-3'); beep(440,0.12,0.1);
+  $('#report').classList.add('hide');
+  let n=3; showMsg('T-3'); beep(440,0.12,0.1); say('T minus three.');
   const iv=setInterval(()=>{
-    if(--n>0){showMsg('T-'+n);beep(440,0.12,0.1);}
+    if(--n>0){showMsg('T-'+n);beep(440,0.12,0.1);say(n===2?'Two.':'One.');}
     else{
       clearInterval(iv);showMsg('IGNITION');
       phase='ASCENT';mode='ASCENT';
+      sep=maxq=false;kick=0.8;   /* liftoff jolt on top of ascent shake */
+      MS.t0=time;MS.vmax=0;MS.dist=0;MS.moon=false;MS.warp=false;
       ignitionBoom();
+      say('Ignition. We have liftoff.');
       $('#flash').classList.add('go');
       launchBtn.classList.add('hide');
       setTimeout(()=>{if(phase==='ASCENT')showMsg('');},2600);
@@ -507,8 +596,24 @@ function flightUpdate(dt){
   if(phase==='SPACE') ly+=speed*dt*0.01;
   else if(phase==='ASCENT'){
     shake=clamp(1-alt/260,0.15,1);
+    if(!maxq&&alt>40){
+      maxq=true;beep(660,0.1,0.09);
+      say('Passing through max Q.');
+      showMsg('MAX-Q');
+      setTimeout(()=>{if(phase==='ASCENT'&&!sep)showMsg('');},1800);
+    }
+    if(!sep&&alt>120){
+      sep=true;kick=1;sepThud();
+      say('Stage one separation confirmed.');
+      const fl=$('#flash');fl.classList.remove('go');fl.classList.add('sep');
+      setTimeout(()=>fl.classList.remove('sep'),900);
+      showMsg('STAGE 1 SEPARATION');
+      setTimeout(()=>{if(phase==='ASCENT')showMsg('');},2200);
+    }
     if(alt>260){
-      phase='SPACE';mode='CRUISE';shake=0;
+      phase='SPACE';mode='CRUISE';shake=0;floatT=6;
+      beep(1320,0.09,0.06);   /* zero-G chime */
+      say('Orbit achieved. Welcome to space, voyager.');
       document.querySelectorAll('.btn.mode').forEach(b=>b.classList.remove('hide'));
       $('#b-return').classList.remove('hide');
       $('#b-tour').classList.remove('hide');
@@ -518,11 +623,13 @@ function flightUpdate(dt){
   }
   else if(phase==='RETURN'&&alt<260){
     phase='REENTRY';
+    say('Atmospheric interface. Brace for re-entry.');
     showMsg('ATMOSPHERIC INTERFACE');
     setTimeout(()=>{if(phase==='REENTRY')showMsg('');},2500);
   }
   else if(phase==='TRANSIT'&&Math.abs(MOON_D-alt)<6){
-    phase='LUNAR';tourTheta=Math.PI;
+    phase='LUNAR';tourTheta=Math.PI;MS.moon=true;
+    say('Lunar orbit insertion complete. Enjoy the view.');
     showMsg('LUNAR ORBIT — ENJOY THE VIEW');
     setTimeout(()=>{if(phase==='LUNAR')showMsg('');},3000);
   }
@@ -531,6 +638,7 @@ function flightUpdate(dt){
     if(tourTheta>=Math.PI*3){
       phase='RETURN';
       warpRiser();
+      say('Return trajectory locked. Coming home.');
       showMsg('RETURN TRAJECTORY — AUTOPILOT ENGAGED');
       setTimeout(()=>{if(phase==='RETURN')showMsg('');},3000);
     }
@@ -544,6 +652,8 @@ function flightUpdate(dt){
     if(alt<=0){
       phase='PAD';mode='PAD';speed=0;shake=0;ly=0;
       ignitionBoom();
+      say('Touchdown. Welcome home, voyager.');
+      setTimeout(showReport,2200);
       showMsg('TOUCHDOWN — WELCOME HOME');
       setTimeout(()=>{if(phase==='PAD')showMsg('');},3500);
       launchBtn.classList.remove('hide');
@@ -568,6 +678,28 @@ function flightUpdate(dt){
   U.uStreak.value=speed*0.05;
   U.uStreakA.value=clamp((Math.abs(speed)-60)/250,0,1);
   streaks.visible=U.uStreakA.value>0.01;
+  /* felt G: theatrical, phase-driven (1G pad → ~4G liftoff → 0G orbit → ~4G reentry) */
+  const gT=phase==='ASCENT'?1.5+2.6*shake+kick*1.2
+          :phase==='REENTRY'?1+3.4*shake
+          :phase==='PAD'?1:0;
+  gVal+=(gT-gVal)*(1-Math.exp(-3*dt));
+  kick*=Math.exp(-2.2*dt);
+  /* mission stats + zero-g floaties */
+  if(phase!=='PAD'){
+    MS.dist+=Math.abs(speed)*dt;
+    MS.vmax=Math.max(MS.vmax,Math.abs(speed));
+  }
+  if(!reduced&&(phase==='SPACE'||phase==='TRANSIT'||phase==='LUNAR'||phase==='RETURN')){
+    floatT-=dt;
+    if(floatT<=0){spawnFloatie();floatT=30+Math.random()*50;}
+  }
+  /* fuel: burns per phase, ground crew refills on the pad (never fully empties) */
+  const drain=phase==='ASCENT'?1.8
+             :phase==='REENTRY'?0.25
+             :phase==='PAD'?-8
+             :phase==='SPACE'?(mode==='WARP'?2.2:mode==='CRUISE'?0.3:0.06)
+             :0.4;   /* TRANSIT / LUNAR / RETURN autopilot */
+  fuel=clamp(fuel-drain*dt,12,100);
   if(Math.abs(camera.fov-tf)>0.02){
     camera.fov+=(tf-camera.fov)*k;
     camera.updateProjectionMatrix();
@@ -583,6 +715,7 @@ $('#b-return').addEventListener('click',()=>{
   if(phase!=='SPACE')return;
   phase='RETURN';
   warpRiser();
+  say('Return trajectory locked. Coming home.');
   showMsg('RETURN TRAJECTORY — AUTOPILOT ENGAGED');
   setTimeout(()=>{if(phase==='RETURN')showMsg('');},3000);
   hideFlightButtons();
@@ -591,6 +724,7 @@ $('#b-tour').addEventListener('click',()=>{
   if(phase!=='SPACE')return;
   phase='TRANSIT';
   beep(880);
+  say('Autopilot engaged. Setting course for the Moon.');
   showMsg('AUTOPILOT — LUNAR TRANSIT');
   setTimeout(()=>{if(phase==='TRANSIT')showMsg('');},3000);
   hideFlightButtons();
@@ -599,6 +733,8 @@ $('#b-tour').addEventListener('click',()=>{
 /* ============ CameraController ============ */
 /* start looking back-and-down at Earth on the pad */
 let yaw=Math.PI,pitch=-0.2,vyaw=0,vpitch=0,dragging=false,px=0,py=0,lastMoveT=0,lastDrag=0;
+let lagYaw=yaw,lagPitch=pitch;   /* lagged copy for cockpit parallax */
+const cockpitEl=$('#cockpit'), adiBall=$('#adi-ball');
 const cv=renderer.domElement;
 cv.addEventListener('pointerdown',e=>{
   dragging=true;px=e.clientX;py=e.clientY;vyaw=vpitch=0;
@@ -634,12 +770,24 @@ function camUpdate(dt,t){
       pitch+=Math.sin(t*0.083+1.7)*0.0008*dt;
     }
   }
-  let shx=0,shy=0;
-  if(shake>0&&!reduced){
-    const a=0.006*shake;
+  let shx=0,shy=0,shr=0;
+  const sTot=shake+kick;
+  if(sTot>0&&!reduced){
+    const a=0.011*Math.min(sTot,1.4);
     shx=(Math.random()-.5)*a; shy=(Math.random()-.5)*a;
+    shr=(Math.random()-.5)*a*0.6;   /* slight roll sells the violence */
   }
-  camera.rotation.set(pitch+shx,yaw+shy,0);
+  camera.rotation.set(pitch+shx,yaw+shy,shr);
+  /* cockpit frame: parallax against head turn + counter-shake */
+  const kl=1-Math.exp(-6*dt);
+  lagYaw+=(yaw-lagYaw)*kl; lagPitch+=(pitch-lagPitch)*kl;
+  const fx=clamp((yaw-lagYaw)*90,-26,26)-shx*2600;
+  const fy=clamp((lagPitch-pitch)*90,-22,22)-shy*2600;
+  cockpitEl.style.transform=`translate(${fx.toFixed(1)}px,${fy.toFixed(1)}px)`;
+  /* attitude indicator: horizon offset = pitch, bank = turn rate + shake roll */
+  const ty=clamp(pitch/1.45,-1,1)*26;
+  const roll=clamp((yaw-lagYaw)*180,-25,25)+shr*400;
+  adiBall.style.transform=`translateY(${ty.toFixed(1)}px) rotate(${roll.toFixed(1)}deg)`;
 }
 
 /* ============ PerfMonitor (quality tiers) ============ */
@@ -756,6 +904,26 @@ function warpRiser(){
   n.connect(nf);nf.connect(ng);ng.connect(AE.master);
   n.start(t);n.stop(t+2.5);
 }
+function sepThud(){
+  /* stage separation: filtered noise thud + short metallic clank */
+  if(!AE.ctx||!AE.on)return;
+  const ctx=AE.ctx,t=ctx.currentTime;
+  const n=ctx.createBufferSource();n.buffer=AE.nbuf;
+  const f=ctx.createBiquadFilter();f.type='lowpass';
+  f.frequency.setValueAtTime(600,t);
+  f.frequency.exponentialRampToValueAtTime(60,t+0.5);
+  const g=ctx.createGain();
+  g.gain.setValueAtTime(0.5,t);
+  g.gain.exponentialRampToValueAtTime(0.001,t+0.55);
+  n.connect(f);f.connect(g);g.connect(AE.master);
+  n.start(t);n.stop(t+0.6);
+  const o=ctx.createOscillator(),og=ctx.createGain();
+  o.type='square';o.frequency.value=190;
+  og.gain.setValueAtTime(0.12,t);
+  og.gain.exponentialRampToValueAtTime(0.001,t+0.2);
+  o.connect(og);og.connect(AE.master);
+  o.start(t);o.stop(t+0.25);
+}
 function ignitionBoom(){
   if(!AE.ctx||!AE.on)return;
   const ctx=AE.ctx,t=ctx.currentTime,
@@ -768,10 +936,32 @@ function ignitionBoom(){
   o.connect(g);g.connect(AE.master);
   o.start(t);o.stop(t+1.7);
 }
+/* ---- mission control voice (SpeechSynthesis, offline-capable) ---- */
+const VOICE={on:true};
+function squelch(){
+  /* short radio static burst framing each transmission */
+  if(!AE.ctx||!AE.on)return;
+  const ctx=AE.ctx,t=ctx.currentTime;
+  const n=ctx.createBufferSource();n.buffer=AE.nbuf;
+  const f=ctx.createBiquadFilter();f.type='bandpass';f.frequency.value=1800;f.Q.value=2;
+  const g=ctx.createGain();
+  g.gain.setValueAtTime(0.06,t);
+  g.gain.exponentialRampToValueAtTime(0.001,t+0.07);
+  n.connect(f);f.connect(g);g.connect(AE.master);
+  n.start(t);n.stop(t+0.09);
+}
+function say(txt){
+  if(!VOICE.on||!AE.on||!('speechSynthesis' in window))return;
+  squelch();
+  const u=new SpeechSynthesisUtterance(txt);
+  u.lang='en-US';u.rate=1.06;u.pitch=0.85;u.volume=0.9;
+  u.onend=()=>squelch();
+  speechSynthesis.speak(u);
+}
 function audioUpdate(){
   if(!AE.ctx)return;
   const t=AE.ctx.currentTime;
-  AE.rumble.gain.setTargetAtTime(phase==='ASCENT'||phase==='REENTRY'?0.14+0.12*shake:0,t,0.25);
+  AE.rumble.gain.setTargetAtTime(phase==='ASCENT'||phase==='REENTRY'?0.14+0.12*Math.min(shake+kick,1.2):0,t,0.25);
   AE.hum.gain.setTargetAtTime(U.uStreakA.value*0.09,t,0.3);
 }
 /* autoplay policy: create/resume on first user gesture */
@@ -779,6 +969,12 @@ function audioUpdate(){
   initAudio();
   if(AE.ctx.state==='suspended')AE.ctx.resume();
 }));
+$('#b-voice').addEventListener('click',()=>{
+  VOICE.on=!VOICE.on;
+  $('#b-voice').style.opacity=VOICE.on?'1':'0.4';
+  if(!VOICE.on){if('speechSynthesis' in window)speechSynthesis.cancel();}
+  else say('Radio check. Loud and clear.');
+});
 $('#b-snd').addEventListener('click',()=>{
   initAudio();
   AE.on=!AE.on;
@@ -791,7 +987,8 @@ $('#b-snd').addEventListener('click',()=>{
 const CONSTS=['ORION','LYRA','CYGNUS','CASSIOPEIA','DRACO','AQUILA','PEGASUS','ANDROMEDA'];
 const E={alt:$('#alt-v'),vel:$('#vel-v'),vm:$('#vel-mode'),hdg:$('#hdg'),
   cn:$('#constname'),ring:$('#ring'),vig:$('#vignette'),ret:$('#reticle'),
-  pwr:$('#b-pwr'),o2:$('#b-o2'),fuel:$('#b-fuel'),shd:$('#b-shd')};
+  pwr:$('#b-pwr'),o2:$('#b-o2'),fuel:$('#b-fuel'),shd:$('#b-shd'),
+  g:$('#g-v')};
 function hudUpdate(t){
   const alt=U.uDist.value;
   if(phase==='SPACE'){
@@ -814,10 +1011,72 @@ function hudUpdate(t){
   E.cn.textContent=CONSTS[Math.floor(t/24)%CONSTS.length];
   E.pwr.style.width=(92+Math.sin(t*0.30)*3)+'%';
   E.o2.style.width =(88+Math.sin(t*0.21+2)*2)+'%';
-  E.fuel.style.width=(76+Math.sin(t*0.12+4)*2)+'%';
+  E.fuel.style.width=fuel.toFixed(0)+'%';
   E.shd.style.width=(95+Math.sin(t*0.26+1)*2)+'%';
-  E.vig.style.opacity=0.3+U.uStreakA.value*0.45;
+  E.g.textContent=gVal.toFixed(1)+' G';
+  E.g.classList.toggle('hi',gVal>=3);
+  cockpitEl.classList.toggle('reentry',phase==='REENTRY');
+  /* high-G tunnel vision: peripheral darkening on top of the warp vignette */
+  E.vig.style.opacity=0.3+U.uStreakA.value*0.45+clamp((gVal-1.8)/2.5,0,1)*0.4;
   E.ret.classList.toggle('warp',U.uStreakA.value>0.5);
+}
+
+/* ============ MissionLog (v4.2) ============ */
+const ACH=[
+  ['orbit','FIRST ORBIT'],
+  ['moon','LUNAR VOYAGER'],
+  ['warp','WARP PILOT'],
+  ['ret','SAFE RETURN'],
+  ['vet','FREQUENT FLYER']
+];
+function lsGet(k,d){try{return JSON.parse(localStorage.getItem(k))??d;}catch(e){return d;}}
+function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
+function showReport(){
+  const flights=lsGet('sv-flights',0)+1;
+  lsSet('sv-flights',flights);
+  const best=lsGet('sv-best',0);
+  const isRec=MS.vmax>best;
+  if(isRec)lsSet('sv-best',MS.vmax);
+  const earned={orbit:true,moon:MS.moon,warp:MS.warp,ret:true,vet:flights>=5};
+  const had=lsGet('sv-ach',{});
+  for(const k in earned)if(earned[k])had[k]=true;
+  lsSet('sv-ach',had);
+  const dur=Math.max(time-MS.t0,0);
+  const mm=String(Math.floor(dur/60)).padStart(2,'0'),
+        ss=String(Math.floor(dur%60)).padStart(2,'0');
+  const v=MS.vmax,
+        vTxt=v>=100?(v/100).toFixed(2)+' c':v.toFixed(1)+' km/s';
+  $('#rep-body').innerHTML=
+    `<div class="rep-row"><span>MISSION TIME</span><span>${mm}:${ss}</span></div>`+
+    `<div class="rep-row"><span>MAX VELOCITY</span><span class="${isRec?'rec':''}">${vTxt}${isRec?' ★REC':''}</span></div>`+
+    `<div class="rep-row"><span>TOTAL DISTANCE</span><span>${Math.round(MS.dist).toLocaleString('en-US')} km</span></div>`+
+    `<div class="rep-row"><span>TOTAL FLIGHTS</span><span>${flights}</span></div>`;
+  $('#rep-badges').innerHTML=ACH
+    .filter(([k])=>earned[k])
+    .map(([k,name])=>`<span class="badge${lsGet('sv-seen',{})[k]?'':' new'}">✦ ${name}</span>`)
+    .join('');
+  lsSet('sv-seen',had);
+  $('#report').classList.remove('hide');
+  beep(1100,0.08,0.06);
+}
+$('#report').addEventListener('click',()=>$('#report').classList.add('hide'));
+
+/* zero-g cabin debris drifting across the window */
+const FLOATIES=['✏️','\u{1F4CB}','\u{1F527}','\u{1F9E4}'];
+function spawnFloatie(){
+  const el=document.createElement('div');
+  el.className='floatie';
+  el.textContent=FLOATIES[Math.floor(Math.random()*FLOATIES.length)];
+  const fromLeft=Math.random()<0.5;
+  el.style.top=(20+Math.random()*50)+'vh';
+  el.style.left=fromLeft?'-6vw':'103vw';
+  document.body.appendChild(el);
+  const dx=(fromLeft?1:-1)*115, dy=Math.random()*24-12,
+        rot=(Math.random()<0.5?-1:1)*(180+Math.random()*240);
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+    el.style.transform=`translate(${dx}vw,${dy}vh) rotate(${rot}deg)`;
+  }));
+  setTimeout(()=>el.remove(),15000);
 }
 
 /* ============ main loop ============ */
