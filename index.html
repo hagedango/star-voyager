@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Star Voyager v4.2</title>
+<title>Star Voyager v5.1</title>
 <!--
   Star Voyager — Rocket Planetarium Simulator v3.2
   設計図 v0.2 準拠 + ローンチシーケンス (PAD → ASCENT → SPACE)
@@ -15,6 +15,8 @@
   v4.0: コックピット窓枠(パララックス+再突入グロー) / G演出(Gメーター+周辺減光+強化シェイク) / ステージ分離+MAX-Q
   v4.1: 管制交信ボイス(SpeechSynthesis+スケルチ音) / 姿勢指示器(人工水平儀) / フェーズ連動の実燃料計
   v4.2: ミッションレポート(飛行時間/最高速度/総距離)+実績バッジ(localStorage) / 無重力で漂う船内小物
+  v5.0: 目的地システム化 — 火星/木星/土星(全プロシージャルテクスチャ+土星リング) / DEST選択UI
+  v5.1: 惑星スキャン(照準ホールド) / DISCOVERY LOG図鑑(localStorage) / GRAND TOURバッジ
   単一ファイル構成 / Three.js (CDN)
 -->
 <style>
@@ -105,6 +107,9 @@ body.no-blur .panel{backdrop-filter:none;-webkit-backdrop-filter:none;background
 #controls{position:fixed;bottom:22px;left:0;right:0;display:flex;gap:12px;justify-content:center;
   pointer-events:none;animation:fadein .8s ease .9s both}
 #controls .btn{pointer-events:auto}
+#destmenu{position:fixed;bottom:86px;left:0;right:0;display:flex;gap:10px;justify-content:center;
+  pointer-events:none;animation:fadein .25s ease both}
+#destmenu .btn{pointer-events:auto}
 .btn{
   font:inherit;font-size:12px;letter-spacing:2px;color:var(--cyan);
   padding:10px 22px;cursor:pointer;
@@ -158,9 +163,10 @@ body.no-blur .btn{backdrop-filter:none;-webkit-backdrop-filter:none;background:r
 #b-snd{padding:10px 14px}
 
 /* ---- mission report ---- */
-#report{top:50%;left:50%;transform:translate(-50%,-50%);min-width:280px;
+#report,#logbook{top:50%;left:50%;transform:translate(-50%,-50%);min-width:280px;
   text-align:left;cursor:pointer;z-index:30;
   animation:repin .5s ease both}   /* .panel's fadein would clobber the centering transform */
+.nodata{color:var(--sub)!important;text-shadow:none!important}
 @keyframes repin{from{opacity:0;transform:translate(-50%,-46%)}to{opacity:1;transform:translate(-50%,-50%)}}
 .rep-row{display:flex;justify-content:space-between;gap:24px;margin:7px 0;font-size:13px}
 .rep-row span:last-child{color:var(--cyan);
@@ -242,6 +248,12 @@ body.no-blur .btn{backdrop-filter:none;-webkit-backdrop-filter:none;background:r
   <div id="gfx">GFX: HIGH</div>
 </div>
 
+<div class="panel hide" id="logbook">
+  <div class="label">DISCOVERY LOG</div>
+  <div id="log-body"></div>
+  <div class="label" style="margin-top:12px;text-align:center">— CLICK TO CLOSE —</div>
+</div>
+
 <div class="panel hide" id="report">
   <div class="label">MISSION REPORT</div>
   <div id="rep-body"></div>
@@ -259,19 +271,21 @@ body.no-blur .btn{backdrop-filter:none;-webkit-backdrop-filter:none;background:r
   </svg>
 </div>
 
+<div id="destmenu" class="hide"></div>
 <div id="controls">
   <button class="btn mode hide" data-m="SLOW">&#128301; SLOW</button>
   <button class="btn mode hide active" data-m="CRUISE">&#128640; CRUISE</button>
   <button class="btn mode hide" data-m="WARP" id="b-warp">&#9889; WARP</button>
-  <button class="btn hide" id="b-tour">&#127765; TOUR</button>
+  <button class="btn hide" id="b-tour">&#129680; TOUR</button>
   <button class="btn hide" id="b-return">&#127757; RETURN</button>
   <button class="btn" id="b-launch">&#128640; LAUNCH</button>
+  <button class="btn" id="b-log" title="discovery log">&#128214;</button>
   <button class="btn" id="b-voice" title="voice on/off">&#128251;</button>
   <button class="btn" id="b-snd" title="sound on/off">&#128266;</button>
 </div>
 
 <div id="boot">
-  <div class="bootline" style="animation-delay:.2s">STAR VOYAGER FLIGHT SYSTEM v4.2</div>
+  <div class="bootline" style="animation-delay:.2s">STAR VOYAGER FLIGHT SYSTEM v5.1</div>
   <div class="bootline" style="animation-delay:.8s">LAUNCH PAD SYSTEMS NOMINAL</div>
   <div class="bootline" style="animation-delay:1.4s">SYSTEM ONLINE</div>
 </div>
@@ -302,7 +316,7 @@ renderer.setSize(innerWidth,innerHeight);
 document.body.prepend(renderer.domElement);
 
 const scene=new THREE.Scene();
-const camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.1,9000);
+const camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.1,150000);
 camera.rotation.order='YXZ';
 
 addEventListener('resize',()=>{
@@ -502,6 +516,88 @@ new THREE.TextureLoader().load(
 const moon=new THREE.Mesh(new THREE.SphereGeometry(250,40,28),moonMat);
 moon.position.set(-450,120,-MOON_D);
 scene.add(moon);
+
+/* ============ Planets (v5.0, all procedural — offline OK) ============ */
+function planetTex(base,draw){
+  const c=document.createElement('canvas');c.width=256;c.height=128;
+  const x=c.getContext('2d');
+  x.fillStyle=base;x.fillRect(0,0,256,128);
+  draw(x);
+  return new THREE.CanvasTexture(c);
+}
+function makePlanet(tex,r){
+  return new THREE.Mesh(new THREE.SphereGeometry(r,40,28),
+    new THREE.MeshLambertMaterial({map:tex,emissive:0x8a8a90,emissiveMap:tex}));
+}
+const marsT=planetTex('#b5502a',x=>{
+  x.fillStyle='#8a3c22';
+  for(let i=0;i<22;i++){x.beginPath();
+    x.ellipse(Math.random()*256,15+Math.random()*98,8+Math.random()*30,4+Math.random()*12,Math.random()*3,0,7);x.fill();}
+  x.fillStyle='#d98a5e';
+  for(let i=0;i<14;i++){x.beginPath();
+    x.ellipse(Math.random()*256,15+Math.random()*98,10+Math.random()*24,3+Math.random()*8,0,0,7);x.fill();}
+  x.fillStyle='rgba(240,245,250,.95)';
+  x.fillRect(0,0,256,9);x.fillRect(0,119,256,9);
+});
+function bandTex(base,bands,spot){
+  return planetTex(base,x=>{
+    let y=0;
+    while(y<128){
+      const h=6+Math.random()*14;
+      x.fillStyle=bands[Math.floor(Math.random()*bands.length)];
+      x.fillRect(0,y,256,h);y+=h;
+    }
+    x.globalAlpha=.25;   /* turbulence blobs along band edges */
+    for(let i=0;i<40;i++){
+      x.fillStyle=bands[Math.floor(Math.random()*bands.length)];
+      x.beginPath();x.ellipse(Math.random()*256,Math.random()*128,6+Math.random()*16,2+Math.random()*4,0,0,7);x.fill();
+    }
+    x.globalAlpha=1;
+    if(spot){
+      x.fillStyle='rgba(224,120,90,.55)';x.beginPath();x.ellipse(170,80,21,12,0,0,7);x.fill();
+      x.fillStyle='#c0503a';x.beginPath();x.ellipse(170,80,16,9,0,0,7);x.fill();
+    }
+  });
+}
+const mars=makePlanet(marsT,300);
+const jupiter=makePlanet(bandTex('#c9a06e',['#e3cda6','#a8764f','#dbb98a','#8f5f3d','#e8d8b8'],true),1600);
+const satBody=makePlanet(bandTex('#ddc79b',['#e8d8b0','#d9c393','#c9ad78','#efe2c0'],false),1100);
+function ringTex(){
+  const c=document.createElement('canvas');c.width=256;c.height=8;
+  const x=c.getContext('2d');
+  for(let i=0;i<256;i++){
+    const a=(Math.sin(i*.35)*.3+.5)*(i<10||i>246?0:1)*(Math.random()*.3+.55);
+    x.fillStyle=`rgba(214,196,158,${a.toFixed(2)})`;x.fillRect(i,0,1,8);
+  }
+  x.clearRect(150,0,14,8);   /* Cassini division */
+  return new THREE.CanvasTexture(c);
+}
+const rgeo=new THREE.RingGeometry(1500,2500,96,1);
+{ /* remap UVs radially so the stripe texture reads as concentric rings */
+  const p=rgeo.attributes.position,uv=rgeo.attributes.uv;
+  for(let i=0;i<uv.count;i++){
+    const r=Math.hypot(p.getX(i),p.getY(i));
+    uv.setXY(i,(r-1500)/1000,0.5);
+  }
+}
+const ring=new THREE.Mesh(rgeo,new THREE.MeshBasicMaterial({
+  map:ringTex(),side:THREE.DoubleSide,transparent:true,depthWrite:false}));
+ring.rotation.x=Math.PI/2;
+const saturn=new THREE.Group();
+saturn.add(satBody,ring);
+saturn.rotation.set(0.18,0,0.28);   /* axial tilt shows the rings at an angle */
+scene.add(mars,jupiter,saturn);
+
+/* destination table: parked off the travel axis at dist, orbits the ship on arrival */
+const DESTS=[
+  {id:'moon',   name:'MOON',   icon:'\u{1F315}', dist:6000,  offX:-450, y:120, orbitR:450,  orbitY:120, period:30, spin:.02, mesh:moon,   note:'Mare & craters mapped'},
+  {id:'mars',   name:'MARS',   icon:'\u{1F534}', dist:18000, offX:700,  y:-60, orbitR:560,  orbitY:90,  period:30, spin:.03, mesh:mars,   note:'Polar caps confirmed'},
+  {id:'jupiter',name:'JUPITER',icon:'\u{1F7E0}', dist:60000, offX:-3800,y:400, orbitR:3000, orbitY:350, period:46, spin:.05, mesh:jupiter,note:'Great Red Spot observed'},
+  {id:'saturn', name:'SATURN', icon:'\u{1FA90}', dist:100000,offX:4600, y:300, orbitR:3400, orbitY:300, period:46, spin:.04, mesh:saturn, note:'Ring system charted'}
+];
+let destIdx=0;
+const dest=()=>DESTS[destIdx];
+for(const D of DESTS)D.mesh.position.set(D.offX,D.y,-D.dist);
 const atmo=new THREE.Sprite(new THREE.SpriteMaterial({map:nebTex(110,170,255),
   transparent:true,opacity:.7,blending:THREE.AdditiveBlending,depthWrite:false}));
 atmo.scale.setScalar(2400);atmo.position.copy(earth.position);scene.add(atmo);
@@ -544,6 +640,8 @@ let gVal=1, kick=0, sep=false, maxq=false;   /* v4.0: G-force + stage separation
 let fuel=100;                                 /* v4.1: phase-driven fuel gauge */
 const MS={t0:0,vmax:0,dist:0,moon:false,warp:false};   /* v4.2: per-flight mission stats */
 let floatT=6;                                 /* v4.2: seconds until next zero-g floatie */
+let scanning=false,scanP=0;                   /* v5.1: planet scan minigame */
+const _dir=new THREE.Vector3(),_to=new THREE.Vector3();
 
 document.querySelectorAll('.btn.mode').forEach(b=>{
   b.addEventListener('click',()=>{
@@ -581,11 +679,12 @@ function flightUpdate(dt){
   let tv,tf;
   if(phase==='RETURN'||phase==='REENTRY'){
     /* autopilot: reverse speed proportional to distance — fast from deep space, gentle near ground */
-    tv=-clamp(U.uDist.value*0.6,12,3000);
+    tv=-clamp(U.uDist.value*0.6,12,Math.max(3000,U.uDist.value*0.12));
     tf=phase==='RETURN'?76:70;
   }else if(phase==='TRANSIT'){
-    const d=MOON_D-U.uDist.value;
-    tv=clamp(d*0.5,-2400,2400);
+    const d=dest().dist-U.uDist.value;
+    const vm=Math.max(1800+dest().dist*0.1,Math.abs(d)*0.2);
+    tv=clamp(d*0.5,-vm,vm);
     if(Math.abs(tv)<12)tv=d>0?12:-12;
     tf=74;
   }else if(phase==='LUNAR'){ tv=0; tf=70;
@@ -627,26 +726,54 @@ function flightUpdate(dt){
     showMsg('ATMOSPHERIC INTERFACE');
     setTimeout(()=>{if(phase==='REENTRY')showMsg('');},2500);
   }
-  else if(phase==='TRANSIT'&&Math.abs(MOON_D-alt)<6){
-    phase='LUNAR';tourTheta=Math.PI;MS.moon=true;
-    say('Lunar orbit insertion complete. Enjoy the view.');
-    showMsg('LUNAR ORBIT — ENJOY THE VIEW');
+  else if(phase==='TRANSIT'&&Math.abs(dest().dist-alt)<6){
+    phase='LUNAR';tourTheta=Math.PI;   /* 'LUNAR' = generic orbit-show phase */
+    if(dest().id==='moon')MS.moon=true;
+    say(dest().name.charAt(0)+dest().name.slice(1).toLowerCase()+' orbit insertion complete. Enjoy the view.');
+    showMsg(dest().name+' ORBIT — ENJOY THE VIEW');
     setTimeout(()=>{if(phase==='LUNAR')showMsg('');},3000);
+    /* auto-scan unscanned bodies once the arrival message clears */
+    setTimeout(()=>{
+      if(phase==='LUNAR'&&!lsGet('sv-scan',{})[dest().id]){
+        scanning=true;scanP=0;
+        say('Beginning surface scan.');
+      }
+    },3300);
   }
   if(phase==='LUNAR'){
-    tourTheta+=dt*Math.PI*2/30;          /* one revolution in ~30s */
+    tourTheta+=dt*Math.PI*2/dest().period;   /* one revolution per period */
     if(tourTheta>=Math.PI*3){
-      phase='RETURN';
+      phase='RETURN';scanning=false;
       warpRiser();
       say('Return trajectory locked. Coming home.');
       showMsg('RETURN TRAJECTORY — AUTOPILOT ENGAGED');
       setTimeout(()=>{if(phase==='RETURN')showMsg('');},3000);
     }
   }
-  /* moon: circles the ship during LUNAR, otherwise parked beside the travel axis */
-  if(phase==='LUNAR')moon.position.set(Math.cos(tourTheta)*450,120,Math.sin(tourTheta)*450);
-  else moon.position.set(-450,120,alt-MOON_D);
-  moon.rotation.y+=0.02*dt;
+  /* destinations: active one circles the ship during orbit show, rest parked off-axis */
+  for(let i=0;i<DESTS.length;i++){
+    const D=DESTS[i],m=D.mesh;
+    if(phase==='LUNAR'&&i===destIdx)
+      m.position.set(Math.cos(tourTheta)*D.orbitR,D.orbitY,Math.sin(tourTheta)*D.orbitR);
+    else m.position.set(D.offX,D.y,alt-D.dist);
+    m.rotation.y+=D.spin*dt;
+  }
+  /* scan minigame: hold the reticle on the body until progress completes */
+  if(phase==='LUNAR'&&scanning){
+    camera.getWorldDirection(_dir);
+    _to.copy(dest().mesh.position).normalize();
+    if(_dir.angleTo(_to)<0.55){
+      scanP+=dt/3.5;
+      if(scanP>=1){
+        scanning=false;
+        const sc=lsGet('sv-scan',{});sc[dest().id]=true;lsSet('sv-scan',sc);
+        beep(990,0.09,0.08);setTimeout(()=>beep(1320,0.12,0.08),130);
+        say('Scan complete. Data acquired.');
+        showMsg('SCAN COMPLETE — DATA ACQUIRED');
+        setTimeout(()=>{if(phase==='LUNAR')showMsg('');},2500);
+      }else showMsg('SCANNING... '+Math.round(scanP*100)+'%');
+    }else showMsg('SCANNING — ALIGN TARGET');
+  }
   if(phase==='REENTRY'){
     shake=clamp(alt/260,0.2,1)*0.8;
     if(alt<=0){
@@ -675,7 +802,7 @@ function flightUpdate(dt){
     c.material.opacity=.55*clamp(1-(alt-60)/70,0,1);
     c.visible=c.material.opacity>0.01&&c.position.z<100;
   }
-  U.uStreak.value=speed*0.05;
+  U.uStreak.value=clamp(speed*0.05,-45,45);   /* cap so far-planet transits stay readable */
   U.uStreakA.value=clamp((Math.abs(speed)-60)/250,0,1);
   streaks.visible=U.uStreakA.value>0.01;
   /* felt G: theatrical, phase-driven (1G pad → ~4G liftoff → 0G orbit → ~4G reentry) */
@@ -709,6 +836,7 @@ function flightUpdate(dt){
 function hideFlightButtons(){
   $('#b-return').classList.add('hide');
   $('#b-tour').classList.add('hide');
+  $('#destmenu').classList.add('hide');
   document.querySelectorAll('.btn.mode').forEach(b=>b.classList.add('hide'));
 }
 $('#b-return').addEventListener('click',()=>{
@@ -720,15 +848,46 @@ $('#b-return').addEventListener('click',()=>{
   setTimeout(()=>{if(phase==='RETURN')showMsg('');},3000);
   hideFlightButtons();
 });
-$('#b-tour').addEventListener('click',()=>{
+/* TOUR opens a destination menu; picking a body departs immediately */
+const destMenu=$('#destmenu');
+function startTour(){
   if(phase!=='SPACE')return;
-  phase='TRANSIT';
+  phase='TRANSIT';scanning=false;
   beep(880);
-  say('Autopilot engaged. Setting course for the Moon.');
-  showMsg('AUTOPILOT — LUNAR TRANSIT');
+  say('Autopilot engaged. Setting course for '+dest().name.toLowerCase()+'.');
+  showMsg('AUTOPILOT — '+dest().name+' TRANSIT');
   setTimeout(()=>{if(phase==='TRANSIT')showMsg('');},3000);
   hideFlightButtons();
+}
+$('#b-tour').addEventListener('click',()=>{
+  if(phase!=='SPACE')return;
+  if(!destMenu.classList.contains('hide')){destMenu.classList.add('hide');return;}
+  const sc=lsGet('sv-scan',{});
+  destMenu.innerHTML='';
+  DESTS.forEach((D,i)=>{
+    const b=document.createElement('button');
+    b.className='btn';
+    b.textContent=`${D.icon} ${D.name}${sc[D.id]?' ✔':''}`;
+    b.addEventListener('click',()=>{
+      destIdx=i;
+      destMenu.classList.add('hide');
+      startTour();
+    });
+    destMenu.appendChild(b);
+  });
+  destMenu.classList.remove('hide');
+  beep(760,0.06,0.07);
 });
+$('#b-log').addEventListener('click',()=>{
+  const lb=$('#logbook');
+  if(!lb.classList.contains('hide')){lb.classList.add('hide');return;}
+  const sc=lsGet('sv-scan',{});
+  $('#log-body').innerHTML=DESTS.map(D=>
+    `<div class="rep-row"><span>${D.name}</span><span class="${sc[D.id]?'':'nodata'}">${sc[D.id]?'✔ '+D.note:'NO DATA'}</span></div>`).join('');
+  lb.classList.remove('hide');
+  beep(880,0.06,0.06);
+});
+$('#logbook').addEventListener('click',()=>$('#logbook').classList.add('hide'));
 
 /* ============ CameraController ============ */
 /* start looking back-and-down at Earth on the pad */
@@ -753,9 +912,11 @@ addEventListener('pointermove',e=>{
 addEventListener('pointerup',()=>{dragging=false;lastDrag=time;document.body.classList.remove('dragging');});
 
 function camUpdate(dt,t){
-  /* tour auto-aim: track the moon unless the user is looking around */
-  if((phase==='TRANSIT'||phase==='LUNAR')&&!dragging&&t-lastDrag>4){
-    const d=moon.position.clone().normalize();
+  /* auto-aim: track the tour target, or Earth on the way home, unless the user is looking around */
+  const aimT=(phase==='TRANSIT'||phase==='LUNAR')?dest().mesh.position
+            :(phase==='RETURN'||phase==='REENTRY')?earth.position:null;
+  if(aimT&&!dragging&&t-lastDrag>4){
+    const d=aimT.clone().normalize();
     const ty=Math.atan2(-d.x,-d.z), tp=Math.asin(clamp(d.y,-1,1));
     const ka=1-Math.exp(-1.5*dt);
     let dy=(ty-yaw)%(Math.PI*2);
@@ -999,7 +1160,7 @@ function hudUpdate(t){
   }else if(phase==='RETURN'||phase==='TRANSIT'||phase==='LUNAR'){
     E.alt.textContent=(alt>=1000?Math.round(alt).toLocaleString('en-US'):alt.toFixed(1))+' km';
     E.vel.textContent=Math.abs(speed/100).toFixed(2)+' c';
-    E.vm.textContent=phase==='RETURN'?'RETURN':phase==='TRANSIT'?'LUNAR TRANSIT':'LUNAR ORBIT';
+    E.vm.textContent=phase==='RETURN'?'RETURN':dest().name+(phase==='TRANSIT'?' TRANSIT':' ORBIT');
   }else{
     E.alt.textContent=alt.toFixed(1)+' km';
     E.vel.textContent=Math.abs(speed).toFixed(1)+' km/s';
@@ -1027,7 +1188,8 @@ const ACH=[
   ['moon','LUNAR VOYAGER'],
   ['warp','WARP PILOT'],
   ['ret','SAFE RETURN'],
-  ['vet','FREQUENT FLYER']
+  ['vet','FREQUENT FLYER'],
+  ['gtour','GRAND TOUR']
 ];
 function lsGet(k,d){try{return JSON.parse(localStorage.getItem(k))??d;}catch(e){return d;}}
 function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
@@ -1037,7 +1199,9 @@ function showReport(){
   const best=lsGet('sv-best',0);
   const isRec=MS.vmax>best;
   if(isRec)lsSet('sv-best',MS.vmax);
-  const earned={orbit:true,moon:MS.moon,warp:MS.warp,ret:true,vet:flights>=5};
+  const sc=lsGet('sv-scan',{});
+  const earned={orbit:true,moon:MS.moon,warp:MS.warp,ret:true,vet:flights>=5,
+    gtour:DESTS.every(D=>sc[D.id])};
   const had=lsGet('sv-ach',{});
   for(const k in earned)if(earned[k])had[k]=true;
   lsSet('sv-ach',had);
